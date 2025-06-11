@@ -1,7 +1,26 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { UploadCloud, FileText, AlertTriangle, CheckCircle, Brain, XCircle, FileArchive, ShieldAlert } from 'lucide-react'; // ADD ShieldAlert icon
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+
+
+// Utility throttle function to prevent rapid repeated calls
+function throttle(fn, delay) {
+  let inThrottle = false;
+  return function (...args) {
+    if (!inThrottle) {
+      fn.apply(this, args);
+      inThrottle = true;
+      setTimeout(() => (inThrottle = false), delay);
+    }
+  };
+}
+
+
+// Helper function to generate a more unique ID than just generateUniqueId()
+const generateUniqueId = () => {
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+};
 
 // issueSeverityStyles remains the same
 const issueSeverityStyles = {
@@ -53,6 +72,17 @@ function Home() {
   const [fileName, setFileName] = useState('');
   const fileInputRef = useRef(null);
 
+  // --- ADD THIS REF FOR DEBOUNCING ---
+  const isProcessingRef = useRef(false); // Flag to immediately check if a request is in progress
+
+  // Throttled version of handleAnalyzeCode
+const throttledAnalyzeCode = useCallback(
+  throttle(() => {
+    handleAnalyzeCode();
+  }, 3000), // Only allow once every 3 seconds
+  [inputCode, uploadedFile, fileName] // Include dependencies
+);
+
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
     if (file) {
@@ -68,13 +98,13 @@ function Home() {
           setInputCode(text);
         } catch (error) {
           console.error("Error reading file:", error);
-          setIssues([{ id: Date.now(), type: 'Frontend Error', message: `Failed to read file: ${error.message}`, severity: 'high' }]);
+          setIssues([{ id: generateUniqueId(), type: 'Frontend Error', message: `Failed to read file: ${error.message}`, severity: 'high' }]);
           clearFile();
         }
         setIsLoading(false);
       } else {
         setInputCode('');
-        setIssues([{ id: Date.now(), type: 'Info', message: `ZIP file '${file.name}' selected. Analysis will process the archive. (Note: Current backend only processes text input, zip handling is a future step).`, severity: 'info' }]);
+        setIssues([{ id: generateUniqueId(), type: 'Info', message: `ZIP file '${file.name}' selected. Analysis will process the archive. (Note: Current backend only processes text input, zip handling is a future step).`, severity: 'info' }]);
       }
     }
   };
@@ -90,17 +120,42 @@ function Home() {
     }
   };
 
-  const handleAnalyzeCode = async () => {
-    let codeToAnalyze = inputCode;
+  // src/App.js (inside your App component, replace the handleAnalyzeCode function)
 
-    if (uploadedFile && uploadedFile.name.endsWith('.zip')) {
-      alert("ZIP file analysis requires backend enhancement. Please paste code or upload a single text-based code file for now.");
-      return;
-    }
+const handleAnalyzeCode = async () => {
+  console.count('handleAnalyzeCode called');
+  console.log('handleAnalyzeCode called at:', new Date().toISOString());
 
-    if (!codeToAnalyze.trim()) {
-      alert("Please upload a single code file or paste code into the textarea to analyze.");
-      return;
+    // Determine the data to send: uploaded file or pasted code
+    let requestBody;
+    let contentType;
+
+    if (uploadedFile) {
+        // If a file is uploaded, use FormData
+        const formData = new FormData();
+        formData.append('codeFile', uploadedFile); // 'codeFile' will be the field name on the backend
+
+        // If there's also pasted code (e.g., user pasted, then uploaded),
+        // prioritize the file for analysis, but send original text as fallback/context.
+        // Or, you might decide to clear pasted code if a file is uploaded.
+        // For now, we'll send the file and let backend handle it.
+        // If the user pastes AND uploads a non-zip, we'll analyze the file.
+        // If the user pastes AND uploads a zip, we'll analyze the zip.
+        // If only paste, we'll analyze the paste.
+        // This is important: clear inputCode if a file is going to be sent for clarity
+        // (This logic is already in handleFileChange, but confirm)
+        // If inputCode is from a non-zip, and then Analyze is clicked, we'll send the file.
+
+        requestBody = formData;
+        contentType = undefined; // browser will set 'multipart/form-data' automatically with FormData
+    } else if (inputCode.trim()) {
+        // If only code is pasted, send as JSON
+        requestBody = JSON.stringify({ code: inputCode });
+        contentType = 'application/json';
+    } else {
+        // No file and no pasted code
+        alert("Please upload a file or paste code into the textarea to analyze.");
+        return;
     }
 
     setIsLoading(true);
@@ -108,13 +163,16 @@ function Home() {
     setIssues([]);
 
     try {
-      const response = await fetch('/api/analyze', {
+      const fetchOptions = {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ code: codeToAnalyze }),
-      });
+        body: requestBody,
+      };
+
+      if (contentType) {
+        fetchOptions.headers = { 'Content-Type': contentType };
+      }
+
+      const response = await fetch('/api/analyze', fetchOptions);
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Failed to parse error response from backend.' }));
@@ -123,59 +181,63 @@ function Home() {
 
       const data = await response.json();
 
+      console.log("Raw data from backend:", data); // See everything the backend sent
+        if (data.parsed) {
+            console.log("AI analysis (parsed JSON):", data.analysis); // See the parsed JSON object
+            console.log("AI bugs array:", data.analysis.bugs); // See just the bugs array
+        } else {
+            console.log("AI analysis (raw text, parsing failed):", data.analysis); // See raw text if parsing failed
+        }
+
       const newIssues = [];
       if (data.parsed) {
-        // Process Bugs
         data.analysis.bugs.forEach((bug, index) => {
           newIssues.push({
-            id: `bug-${index}-${Date.now()}`,
+            id: `bug-${index}-${generateUniqueId()}`, // Use a unique ID for each issue to avoid duplicates
             type: 'Bug',
             message: bug.message,
             line: bug.line || 'N/A',
             severity: bug.severity || 'high',
-            suggestedFix: bug.suggestedFix || null // Capture suggestedFix
+            suggestedFix: bug.suggestedFix || null
           });
         });
 
-        // Process Security Vulnerabilities (NEW CATEGORY)
         data.analysis.security_vulnerabilities.forEach((secVuln, index) => {
           newIssues.push({
-            id: `sec-${index}-${Date.now()}`,
+            id: `sec-${index}-${generateUniqueId()}`, // Use a unique ID for each issue to avoid duplicates
             type: 'Security Vulnerability',
             message: secVuln.message,
             line: secVuln.line || 'N/A',
-            severity: secVuln.severity || 'critical', // Default to critical
-            suggestedFix: secVuln.suggestedFix || null // Capture suggestedFix
+            severity: secVuln.severity || 'critical',
+            suggestedFix: secVuln.suggestedFix || null
           });
         });
 
-        // Process Improvements
         data.analysis.improvements.forEach((imp, index) => {
           newIssues.push({
-            id: `imp-${index}-${Date.now()}`,
+            id: `imp-${index}-${generateUniqueId()}`, // Use a unique ID for each issue to avoid duplicates
             type: 'Improvement',
             message: imp.message,
             line: imp.line || 'N/A',
             severity: imp.severity || 'medium',
-            suggestedFix: imp.suggestedFix || null // Capture suggestedFix
+            suggestedFix: imp.suggestedFix || null
           });
         });
 
-        // Process Explanations
         data.analysis.explanations.forEach((exp, index) => {
           newIssues.push({
-            id: `exp-${index}-${Date.now()}`,
+            id: `exp-${index}-${generateUniqueId()}`, // Use a unique ID for each issue to avoid duplicates
             type: 'Explanation',
             message: exp.message,
             line: exp.line || 'N/A',
             severity: exp.severity || 'info',
-            suggestedFix: exp.suggestedFix || null // Explanations won't typically have fixes, but for consistent structure
+            suggestedFix: exp.suggestedFix || null
           });
         });
 
         if (newIssues.length === 0) {
             newIssues.push({
-                id: `no-issues-${Date.now()}`,
+                id: `no-issues-${generateUniqueId()}`,
                 type: 'AI Analysis',
                 message: 'No significant issues or improvements found. Code looks good!',
                 line: 'N/A',
@@ -183,16 +245,77 @@ function Home() {
             });
         }
 
-        setOutputCode('// AI Analysis successfully structured below.');
+        const currentAnalysisFilePath = data.message.startsWith('Analyzing key file from ZIP:')
+                                ? data.message.split(': ')[1].split(' ')[0] // Extract filename from message like "Analyzing key file from ZIP: my-file.js"
+                                : (data.message.startsWith('Analyzing single file:')
+                                    ? data.message.split(': ')[1].split('.')[0] + '.' + data.message.split(': ')[1].split('.')[1].split(' ')[0] // Extract filename from message like "Analyzing single file: my-file.js"
+                                    : (fileName || 'Pasted Code') // Fallback to fileName or 'Pasted Code'
+                                );
+
+
+// Process Bugs
+data.analysis.bugs.forEach((bug, index) => {
+  newIssues.push({
+    id: `bug-${index}-${generateUniqueId()}`,
+    type: 'Bug',
+    message: bug.message,
+    line: bug.line || 'N/A',
+    severity: bug.severity || 'high',
+    suggestedFix: bug.suggestedFix || null,
+    filePath: bug.filePath || currentAnalysisFilePath // Add filePath here
+  });
+});
+
+// Process Security Vulnerabilities
+data.analysis.security_vulnerabilities.forEach((secVuln, index) => {
+  newIssues.push({
+    id: `sec-${index}-${generateUniqueId()}`,
+    type: 'Security Vulnerability',
+    message: secVuln.message,
+    line: secVuln.line || 'N/A',
+    severity: secVuln.severity || 'critical',
+    suggestedFix: secVuln.suggestedFix || null,
+    filePath: secVuln.filePath || currentAnalysisFilePath // Add filePath here
+  });
+});
+
+// Process Improvements
+data.analysis.improvements.forEach((imp, index) => {
+  newIssues.push({
+    id: `imp-${index}-${generateUniqueId()}`,
+    type: 'Improvement',
+    message: imp.message,
+    line: imp.line || 'N/A',
+    severity: imp.severity || 'medium',
+    suggestedFix: imp.suggestedFix || null,
+    filePath: imp.filePath || currentAnalysisFilePath // Add filePath here
+  });
+});
+
+// Process Explanations
+data.analysis.explanations.forEach((exp, index) => {
+  newIssues.push({
+    id: `exp-${index}-${generateUniqueId()}`,
+    type: 'Explanation',
+    message: exp.message,
+    line: exp.line || 'N/A',
+    severity: exp.severity || 'info',
+    suggestedFix: exp.suggestedFix || null,
+    filePath: exp.filePath || currentAnalysisFilePath // Add filePath here
+  });
+});
+
+        // For zip files, outputCode could be a message about processed files
+        setOutputCode(data.message || '// AI Analysis successfully structured below.');
       } else {
         newIssues.push({
-          id: Date.now(),
+          id: generateUniqueId(),
           type: 'AI Analysis (Raw)',
           message: `The AI response could not be fully parsed into structured categories. Here is the raw analysis:\n\n${data.analysis}`,
           line: 'N/A',
           severity: 'info'
         });
-        setOutputCode('// AI Analysis (raw) displayed below due to parsing issues.');
+        setOutputCode(data.message || '// AI Analysis (raw) displayed below due to parsing issues.');
       }
 
       setIssues(newIssues);
@@ -200,7 +323,7 @@ function Home() {
     } catch (error) {
       console.error("Error analyzing code:", error);
       setIssues([{
-        id: Date.now(),
+        id: generateUniqueId(),
         type: 'Error',
         message: error.message || 'An unknown error occurred during analysis.',
         line: 'N/A',
@@ -279,7 +402,7 @@ function Home() {
 
             <button
               className="mt-8 w-full bg-gradient-to-r from-purple-600 via-pink-500 to-red-500 hover:from-purple-700 hover:via-pink-600 hover:to-red-600 text-white font-semibold py-3.5 px-4 rounded-lg shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 disabled:opacity-60 disabled:transform-none flex items-center justify-center text-lg"
-              onClick={handleAnalyzeCode}
+              onClick={throttledAnalyzeCode}
               disabled={isLoading || (!inputCode.trim() && !uploadedFile)}
             >
               {isLoading && (
@@ -328,6 +451,9 @@ function Home() {
                             <span className={`font-semibold block mb-1 ${styles.textColor}`}>
                               {issue.type}
                               {issue.line !== 'N/A' && <span className="font-normal text-neutral-400 text-xs ml-2">({issue.line})</span>}
+                              {issue.filePath && issue.filePath !== 'N/A' && (
+          <span className="font-normal text-neutral-400 text-xs ml-2"> (File: {issue.filePath})</span>
+      )}
                             </span>
                             <div className="text-neutral-300 text-sm prose prose-invert prose-p:my-1 prose-ul:my-1 prose-li:my-1">
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
