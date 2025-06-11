@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { UploadCloud, FileText, AlertTriangle, CheckCircle, Brain, XCircle, FileArchive } from 'lucide-react';
+import ReactMarkdown from 'react-markdown'; // ADD THIS
+import remarkGfm from 'remark-gfm'; 
 
 // issueSeverityStyles remains the same as your last version
 const issueSeverityStyles = {
@@ -311,11 +313,11 @@ function Home() {
                               {issue.line !== 'N/A' && <span className="font-normal text-neutral-400 text-xs ml-2">({issue.line})</span>}
                             </span>
                             {/* Render message as preformatted if it's AI analysis for better readability of code blocks etc. */}
-                            {issue.type.includes('Raw') || issue.type.includes('Analysis') ? (
-                                <pre className="text-neutral-300 text-sm whitespace-pre-wrap font-sans">{issue.message}</pre>
-                            ) : (
-                                <p className="text-neutral-300 text-sm">{issue.message}</p>
-                            )}
+                            <div className="text-neutral-300 text-sm prose prose-invert prose-p:my-1 prose-ul:my-1 prose-li:my-1"> {/* Added prose classes for basic markdown styling */}
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {issue.message}
+                              </ReactMarkdown>
+                              </div>
                           </div>
                         </li>
                       );
