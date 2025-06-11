@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, FileText, AlertTriangle, CheckCircle, Brain, XCircle, FileArchive } from 'lucide-react';
-import ReactMarkdown from 'react-markdown'; // ADD THIS
-import remarkGfm from 'remark-gfm'; 
+import { UploadCloud, FileText, AlertTriangle, CheckCircle, Brain, XCircle, FileArchive, ShieldAlert } from 'lucide-react'; // ADD ShieldAlert icon
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
-// issueSeverityStyles remains the same as your last version
+// issueSeverityStyles remains the same
 const issueSeverityStyles = {
   low: {
     borderColor: 'border-l-green-400',
@@ -22,6 +22,12 @@ const issueSeverityStyles = {
     bgColor: 'bg-red-500/10',
     textColor: 'text-red-300',
     icon: <AlertTriangle size={18} className="text-red-400 mr-2" />
+  },
+  critical: { // NEW SEVERITY for security
+    borderColor: 'border-l-red-600',
+    bgColor: 'bg-red-600/15',
+    textColor: 'text-red-200',
+    icon: <ShieldAlert size={18} className="text-red-400 mr-2" /> // Use ShieldAlert for critical security
   },
   info: {
     borderColor: 'border-l-blue-400',
@@ -84,7 +90,6 @@ function Home() {
     }
   };
 
-  // --- MODIFIED handleAnalyzeCode to parse JSON ---
   const handleAnalyzeCode = async () => {
     let codeToAnalyze = inputCode;
 
@@ -116,10 +121,10 @@ function Home() {
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
-      const data = await response.json(); // This 'data' object now contains { analysis: parsedAnalysis, parsed: true } or { analysis: rawText, parsed: false }
+      const data = await response.json();
 
       const newIssues = [];
-      if (data.parsed) { // If the backend successfully parsed the AI's JSON
+      if (data.parsed) {
         // Process Bugs
         data.analysis.bugs.forEach((bug, index) => {
           newIssues.push({
@@ -127,7 +132,20 @@ function Home() {
             type: 'Bug',
             message: bug.message,
             line: bug.line || 'N/A',
-            severity: bug.severity || 'high' // Default to high if not specified
+            severity: bug.severity || 'high',
+            suggestedFix: bug.suggestedFix || null // Capture suggestedFix
+          });
+        });
+
+        // Process Security Vulnerabilities (NEW CATEGORY)
+        data.analysis.security_vulnerabilities.forEach((secVuln, index) => {
+          newIssues.push({
+            id: `sec-${index}-${Date.now()}`,
+            type: 'Security Vulnerability',
+            message: secVuln.message,
+            line: secVuln.line || 'N/A',
+            severity: secVuln.severity || 'critical', // Default to critical
+            suggestedFix: secVuln.suggestedFix || null // Capture suggestedFix
           });
         });
 
@@ -138,7 +156,8 @@ function Home() {
             type: 'Improvement',
             message: imp.message,
             line: imp.line || 'N/A',
-            severity: imp.severity || 'medium' // Default to medium
+            severity: imp.severity || 'medium',
+            suggestedFix: imp.suggestedFix || null // Capture suggestedFix
           });
         });
 
@@ -149,24 +168,23 @@ function Home() {
             type: 'Explanation',
             message: exp.message,
             line: exp.line || 'N/A',
-            severity: exp.severity || 'info' // Default to info
+            severity: exp.severity || 'info',
+            suggestedFix: exp.suggestedFix || null // Explanations won't typically have fixes, but for consistent structure
           });
         });
 
-        // Set a general info message if no issues were found
         if (newIssues.length === 0) {
             newIssues.push({
                 id: `no-issues-${Date.now()}`,
                 type: 'AI Analysis',
-                message: 'No significant bugs, improvements, or explanations found. Code looks good!',
+                message: 'No significant issues or improvements found. Code looks good!',
                 line: 'N/A',
                 severity: 'info'
             });
         }
 
-        setOutputCode('// AI Analysis successfully structured below.'); // Indicate structured output
+        setOutputCode('// AI Analysis successfully structured below.');
       } else {
-        // Fallback: If AI didn't return valid JSON, display its raw text as one large issue
         newIssues.push({
           id: Date.now(),
           type: 'AI Analysis (Raw)',
@@ -174,7 +192,7 @@ function Home() {
           line: 'N/A',
           severity: 'info'
         });
-        setOutputCode('// AI Analysis (raw) displayed below due to parsing issues.'); // Indicate raw output
+        setOutputCode('// AI Analysis (raw) displayed below due to parsing issues.');
       }
 
       setIssues(newIssues);
@@ -192,7 +210,6 @@ function Home() {
       setIsLoading(false);
     }
   };
-  // --- END OF MODIFIED handleAnalyzeCode ---
 
   const isZipFile = fileName.endsWith('.zip');
   const displayFileName = fileName.length > 30 ? `${fileName.substring(0,15)}...${fileName.substring(fileName.length-12)}` : fileName;
@@ -281,7 +298,6 @@ function Home() {
                 <Brain size={28} className="mr-3 text-pink-400"/>
                 AI Analysis Report
               </h2>
-              {/* Optional: Display a general message about the output */}
               {outputCode && (
                 <div className="mb-8">
                   <h3 className="text-xl font-semibold text-neutral-200 mb-3 flex items-center">
@@ -300,6 +316,7 @@ function Home() {
                   </h3>
                   <ul className="space-y-3">
                     {issues.map(issue => {
+                      // Dynamically choose style based on severity, defaulting if missing
                       const styles = issueSeverityStyles[issue.severity] || issueSeverityStyles.default;
                       return (
                         <li
@@ -307,17 +324,24 @@ function Home() {
                           className={`p-4 rounded-lg shadow-md border-l-4 flex items-start ${styles.borderColor} ${styles.bgColor}`}
                         >
                           {styles.icon}
-                          <div>
+                          <div className="flex-1  min-w-0"> {/* Added flex-1 to push suggested fix to right */}
                             <span className={`font-semibold block mb-1 ${styles.textColor}`}>
                               {issue.type}
                               {issue.line !== 'N/A' && <span className="font-normal text-neutral-400 text-xs ml-2">({issue.line})</span>}
                             </span>
-                            {/* Render message as preformatted if it's AI analysis for better readability of code blocks etc. */}
-                            <div className="text-neutral-300 text-sm prose prose-invert prose-p:my-1 prose-ul:my-1 prose-li:my-1"> {/* Added prose classes for basic markdown styling */}
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                  {issue.message}
-                              </ReactMarkdown>
+                            <div className="text-neutral-300 text-sm prose prose-invert prose-p:my-1 prose-ul:my-1 prose-li:my-1">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                    {issue.message}
+                                </ReactMarkdown>
+                            </div>
+                            {issue.suggestedFix && issue.suggestedFix !== "N/A" && ( // NEW: Display suggestedFix
+                              <div className="mt-3 p-3 bg-white/5 border border-white/10 rounded-md text-neutral-400 text-xs font-mono  w-full">
+                                <h4 className="font-semibold text-neutral-300 mb-1">Suggested Fix:</h4>
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                  {`\`\`\`\n${issue.suggestedFix}\n\`\`\``}
+                                </ReactMarkdown>
                               </div>
+                            )}
                           </div>
                         </li>
                       );
@@ -339,3 +363,8 @@ function Home() {
 }
 
 export default Home;
+
+
+
+
+
